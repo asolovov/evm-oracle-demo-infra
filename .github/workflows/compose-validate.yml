@@ -1,0 +1,67 @@
+# Validate docker-compose YAML + shell scripts on every push / PR.
+#
+# Build is intentionally **not** run in CI:
+# the submodules pull every service from another repo (each with its own
+# CI), so a `docker compose build` in this workflow would either re-run
+# every service's CI here (wasteful) or fail on access to those submodules
+# from GitHub Actions (annoying). Instead we trust:
+#   1. `docker compose config` to catch YAML / interpolation errors.
+#   2. Each service's own CI to guarantee its image builds.
+#
+# All third-party actions are SHA-pinned (Gateway org policy).
+name: validate
+
+on:
+  push:
+    branches: [main, "feat/**"]
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Write minimal .env for compose interpolation
+        # docker-compose.yml uses ${X:?msg} on a handful of operator-supplied
+        # vars; supply dummies here so `compose config` doesn't error.
+        run: |
+          cat > .env <<'EOF'
+          DOMAIN=localhost
+          CADDY_EMAIL=internal
+          POSTGRES_ROOT_PASSWORD=ci_root
+          PRICE_DB_PASSWORD=ci_price
+          ORACLE_DB_PASSWORD=ci_oracle
+          INDEXER_DB_PASSWORD=ci_indexer
+          CHAIN_WS_URL=wss://example.invalid
+          CHAIN_RPC_URL=https://example.invalid
+          CHAIN_REGISTRY_ADDRESS=0x89a6c12a403733c6a817472cec46a530581cb7ef
+          CHAIN_AGGREGATOR_ADDRESSES={}
+          SIGNER_REPORTER_KEY_PATHS=["/etc/lighthouse/secrets/reporter1.key"]
+          EOF
+
+      - name: Validate dev compose
+        run: docker compose --env-file .env -f docker/docker-compose.yml config -q
+
+      - name: Validate prod compose
+        run: |
+          docker compose --env-file .env \
+            -f docker/docker-compose.yml \
+            -f docker/docker-compose.prod.yml \
+            config -q
+
+      - name: Install shellcheck
+        run: sudo apt-get install -y --no-install-recommends shellcheck
+
+      - name: shellcheck scripts/*.sh + postgres-init
+        run: shellcheck scripts/*.sh docker/postgres-init/*.sh
+
+      - name: Caddyfile validate
+        # Use the same Caddy image the prod stack pins to.
+        run: |
+          docker run --rm -v "${{ github.workspace }}/docker/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile

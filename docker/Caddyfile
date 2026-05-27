@@ -1,0 +1,62 @@
+# EVM Oracle Demo — Caddy reverse proxy.
+#
+# Routes:
+#   /api/*    -> rest-api:8080   (REST endpoints)
+#   /ws/*     -> rest-api:8080   (WebSocket stream)
+#   /healthz  -> rest-api:8081   (operator health probe)
+#   /*        -> frontend:3000   (Next.js — wired post task 09)
+#
+# DOMAIN env var drives the site address. For local dev set DOMAIN=localhost
+# which uses Caddy's internal CA (no Let's Encrypt rate-limit hit). For prod
+# set DOMAIN to the apex/sub-domain plus CADDY_EMAIL so ACME can issue a
+# real cert via HTTP-01.
+
+{
+	# Email used by ACME; "internal" disables external ACME entirely.
+	email {$CADDY_EMAIL:internal}
+}
+
+{$DOMAIN:localhost} {
+	encode gzip zstd
+
+	# Health probe path — exposed without rate limiting so VPS load balancers
+	# and external uptime monitors can hit it cheaply. rest-api serves
+	# /healthz on its operator-facing listener (:8081).
+	handle /healthz {
+		reverse_proxy rest-api:8081
+	}
+
+	# REST surface — rest-api serves under /api/v1/. Use `handle` (not
+	# handle_path) so the upstream sees the original path verbatim.
+	handle /api/* {
+		reverse_proxy rest-api:8080 {
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Forwarded-For {remote_host}
+		}
+	}
+
+	# WebSocket surface.
+	handle /ws/* {
+		reverse_proxy rest-api:8080 {
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Forwarded-For {remote_host}
+		}
+	}
+
+	# Frontend (Next.js) — wired in once task 09 lands.
+	#
+	# Until then this returns a placeholder so the deploy is testable end to
+	# end without the dashboard. Replace this block with:
+	#     handle {
+	#         reverse_proxy frontend:3000
+	#     }
+	# once the frontend service is in docker-compose.yml.
+	handle {
+		respond "EVM Oracle Demo — backend up. Dashboard pending (task 09)." 200
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

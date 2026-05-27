@@ -1,0 +1,259 @@
+# EVM Oracle Demo — dev defaults.
+#
+# Brings up the full backend stack:
+#   postgres + redis  -> data stores
+#   price-service     -> off-chain aggregation (gRPC :50051)
+#   indexer-service   -> chain observer (gRPC :9090)
+#   oracle-service    -> reactive submitter (no inbound ports needed)
+#   rest-api          -> public BFF (HTTP :8080)
+#   caddy             -> TLS reverse proxy (:80, :443)
+#
+# Each service builds from its submodule under ../repos/. Override files
+# (docker-compose.prod.yml) swap build for image: pulls in production.
+#
+# Frontend service is intentionally absent — task 09 (frontend) is not yet
+# implemented. Wire it once the evm-oracle-demo-frontend repo exists; see
+# docs/DEPLOY.md "Frontend wiring (post task 09)".
+
+name: evm-oracle-demo
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: oracle-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_ROOT_PASSWORD:-postgres}
+      POSTGRES_DB: postgres
+      PRICE_DB_PASSWORD: ${PRICE_DB_PASSWORD:-price_pass}
+      ORACLE_DB_PASSWORD: ${ORACLE_DB_PASSWORD:-oracle_pass}
+      INDEXER_DB_PASSWORD: ${INDEXER_DB_PASSWORD:-indexer_pass}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - lighthouse
+
+  redis:
+    image: redis:7-alpine
+    container_name: oracle-redis
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+    networks:
+      - lighthouse
+
+  price-service:
+    container_name: oracle-price-service
+    build:
+      context: ../repos/evm-oracle-demo-price-service
+      dockerfile: Dockerfile
+    environment:
+      ENV: ${ENV:-dev}
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_USER: price_user
+      DATABASE_PASSWORD: ${PRICE_DB_PASSWORD:-price_pass}
+      DATABASE_NAME: evm_price
+      DATABASE_SSL_MODE: disable
+      GRPC_HOST: 0.0.0.0
+      GRPC_PORT: 50051
+      HEALTHZ_HOST: 0.0.0.0
+      HEALTHZ_PORT: 8080
+      SOURCES_UNISWAP_V3_API_KEY: ${SOURCES_UNISWAP_V3_API_KEY:-}
+      SOURCES_ALPHA_VANTAGE_API_KEY: ${SOURCES_ALPHA_VANTAGE_API_KEY:-}
+      SOURCES_TWELVE_DATA_API_KEY: ${SOURCES_TWELVE_DATA_API_KEY:-}
+      TELEMETRY_LOG_LEVEL: ${LOG_LEVEL:-info}
+      TELEMETRY_LOG_FORMAT: json
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # distroless image — use the binary's own healthz endpoint via a
+      # sidecar pattern would be cleaner; for v1 we trust the readiness of
+      # the gRPC port via depends_on chain. Compose 2.x docker healthcheck
+      # against a distroless image needs CMD-SHELL on a host with curl/wget,
+      # neither of which exist in distroless. Skip the in-container check
+      # and rely on /healthz from the host (see docs/TROUBLESHOOTING.md).
+      disable: true
+    restart: unless-stopped
+    networks:
+      - lighthouse
+
+  indexer-service:
+    container_name: oracle-indexer-service
+    build:
+      context: ../repos/evm-oracle-demo-indexer-service
+      dockerfile: Dockerfile
+    environment:
+      ENV: ${ENV:-dev}
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_USER: indexer_user
+      DATABASE_PASSWORD: ${INDEXER_DB_PASSWORD:-indexer_pass}
+      DATABASE_NAME: evm_indexer
+      DATABASE_SSL_MODE: disable
+      GRPC_HOST: 0.0.0.0
+      GRPC_PORT: 9090
+      HEALTHZ_HOST: 0.0.0.0
+      HEALTHZ_PORT: 8080
+      CHAIN_NAME: ${CHAIN_NAME:-ethereum-sepolia}
+      CHAIN_CHAIN_ID: ${CHAIN_CHAIN_ID:-11155111}
+      CHAIN_WS_URL: ${CHAIN_WS_URL:?CHAIN_WS_URL is required}
+      CHAIN_RPC_URL: ${CHAIN_RPC_URL:?CHAIN_RPC_URL is required}
+      CHAIN_REGISTRY_ADDRESS: ${CHAIN_REGISTRY_ADDRESS:-0x89a6c12a403733c6a817472cec46a530581cb7ef}
+      CHAIN_BACKFILL_FROM_BLOCK: ${INDEXER_BACKFILL_FROM_BLOCK:-0}
+      INDEXER_CONFIRMATIONS: ${INDEXER_CONFIRMATIONS:-5}
+      INDEXER_REORG_CHECK_INTERVAL_SEC: 10
+      INDEXER_BACKFILL_CHUNK_SIZE: 1000
+      INDEXER_STREAM_SUBSCRIBER_BUFFER: 256
+      TELEMETRY_LOG_LEVEL: ${LOG_LEVEL:-info}
+      TELEMETRY_LOG_FORMAT: json
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+    networks:
+      - lighthouse
+
+  oracle-service:
+    container_name: oracle-oracle-service
+    build:
+      context: ../repos/evm-oracle-demo-oracle-service
+      dockerfile: Dockerfile
+    environment:
+      ENV: ${ENV:-dev}
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_USER: oracle_user
+      DATABASE_PASSWORD: ${ORACLE_DB_PASSWORD:-oracle_pass}
+      DATABASE_NAME: evm_oracle
+      DATABASE_SSL_MODE: disable
+      GRPC_HOST: 0.0.0.0
+      GRPC_PORT: 9091
+      HEALTHZ_HOST: 0.0.0.0
+      HEALTHZ_PORT: 8080
+      CHAIN_NAME: ${CHAIN_NAME:-ethereum-sepolia}
+      CHAIN_CHAIN_ID: ${CHAIN_CHAIN_ID:-11155111}
+      CHAIN_RPC_URL: ${CHAIN_RPC_URL:?CHAIN_RPC_URL is required}
+      CHAIN_REGISTRY_ADDRESS: ${CHAIN_REGISTRY_ADDRESS:-0x89a6c12a403733c6a817472cec46a530581cb7ef}
+      CHAIN_AGGREGATOR_ADDRESSES: ${CHAIN_AGGREGATOR_ADDRESSES:?CHAIN_AGGREGATOR_ADDRESSES JSON map is required}
+      PRICE_ADDRESS: price-service:50051
+      INDEXER_ADDRESS: indexer-service:9090
+      SIGNER_REPORTER_KEY_PATHS: ${SIGNER_REPORTER_KEY_PATHS:-["/etc/lighthouse/secrets/reporter1.key","/etc/lighthouse/secrets/reporter2.key","/etc/lighthouse/secrets/reporter3.key"]}
+      SIGNER_THRESHOLD: ${SIGNER_THRESHOLD:-2}
+      SIGNER_ALLOW_INSECURE_PERMS: ${SIGNER_ALLOW_INSECURE_PERMS:-false}
+      HEARTBEAT_ENABLED: ${HEARTBEAT_ENABLED:-true}
+      HEARTBEAT_INTERVAL_SEC: ${HEARTBEAT_INTERVAL_SEC:-3600}
+      HEARTBEAT_DEVIATION_THRESHOLD: ${HEARTBEAT_DEVIATION_THRESHOLD:-0.015}
+      TELEMETRY_LOG_LEVEL: ${LOG_LEVEL:-info}
+      TELEMETRY_LOG_FORMAT: json
+    volumes:
+      # Reporter keys mounted read-only from the host secrets layout (spec §12.3).
+      # In dev the operator can override REPORTER_SECRETS_DIR; in prod this is
+      # always /etc/lighthouse/secrets/ owned by the deploy user.
+      - ${REPORTER_SECRETS_DIR:-./secrets}:/etc/lighthouse/secrets:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      price-service:
+        condition: service_started
+      indexer-service:
+        condition: service_started
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+    networks:
+      - lighthouse
+
+  rest-api:
+    container_name: oracle-rest-api
+    build:
+      context: ../repos/evm-oracle-demo-api
+      dockerfile: Dockerfile
+    environment:
+      ENV: ${ENV:-dev}
+      HTTP_HOST: 0.0.0.0
+      HTTP_PORT: 8080
+      HTTP_CORS_ORIGINS: ${HTTP_CORS_ORIGINS:-["http://localhost:3000"]}
+      HEALTHZ_HOST: 0.0.0.0
+      HEALTHZ_PORT: 8081
+      REDIS_ADDR: redis:6379
+      REDIS_PASSWORD: ""
+      REDIS_DB: 0
+      GRPC_CLIENT_PRICE_SERVICE_ADDR: price-service:50051
+      GRPC_CLIENT_INDEXER_SERVICE_ADDR: indexer-service:9090
+      GRPC_CLIENT_USE_TLS: "false"
+      RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
+      RATE_LIMIT_REQUESTS_PER_MINUTE: ${RATE_LIMIT_REQUESTS_PER_MINUTE:-60}
+      CHAIN_CHAIN_ID: ${CHAIN_CHAIN_ID:-11155111}
+      CHAIN_NAME: ${CHAIN_NAME:-ethereum-sepolia}
+      CHAIN_REGISTRY_ADDRESS: ${CHAIN_REGISTRY_ADDRESS:-0x89a6c12a403733c6a817472cec46a530581cb7ef}
+      CHAIN_EXPLORER_URL_PATTERN: ${CHAIN_EXPLORER_URL_PATTERN:-https://sepolia.etherscan.io/tx/{tx_hash}}
+      AUTHOR_NAME: ${AUTHOR_NAME:-Andrei Solovov}
+      TELEMETRY_LOG_LEVEL: ${LOG_LEVEL:-info}
+      TELEMETRY_LOG_FORMAT: json
+    depends_on:
+      redis:
+        condition: service_healthy
+      price-service:
+        condition: service_started
+      indexer-service:
+        condition: service_started
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+    networks:
+      - lighthouse
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: oracle-caddy
+    ports:
+      - "${CADDY_HTTP_PORT:-80}:80"
+      - "${CADDY_HTTPS_PORT:-443}:443"
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+      EMAIL: ${CADDY_EMAIL:-internal}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      rest-api:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:80/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - lighthouse
+
+volumes:
+  postgres_data:
+  redis_data:
+  caddy_data:
+  caddy_config:
+
+networks:
+  lighthouse:
+    name: lighthouse
+    driver: bridge
