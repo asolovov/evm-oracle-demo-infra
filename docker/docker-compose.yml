@@ -230,9 +230,11 @@ services:
       TELEMETRY_LOG_FORMAT: json
     volumes:
       # Reporter keys mounted read-only from the host secrets layout (spec §12.3).
-      # In dev the operator can override REPORTER_SECRETS_DIR; in prod this is
-      # always /etc/lighthouse/secrets/ owned by the deploy user.
-      - ${REPORTER_SECRETS_DIR:-./secrets}:/etc/lighthouse/secrets:ro
+      # Default `../secrets` resolves the repo-root `secrets/` directory because
+      # compose interprets relative volume paths relative to the compose file's
+      # directory (`docker/`). In prod set REPORTER_SECRETS_DIR to the absolute
+      # path `/etc/lighthouse/secrets`.
+      - ${REPORTER_SECRETS_DIR:-../secrets}:/etc/lighthouse/secrets:ro
     depends_on:
       postgres:
         condition: service_healthy
