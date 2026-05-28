@@ -255,6 +255,11 @@ services:
     build:
       context: ../repos/evm-oracle-demo-api
       dockerfile: Dockerfile
+    # Dev publishes the API on the host so the dashboard / curl can hit
+    # http://localhost:8080 directly. Production fronts everything via Caddy
+    # and resets this back to internal-only (docker-compose.prod.yml).
+    ports:
+      - "${API_HOST_PORT:-8080}:8080"
     environment:
       ENV: ${ENV:-dev}
       HTTP_HOST: 0.0.0.0
@@ -293,6 +298,10 @@ services:
   caddy:
     image: caddy:2-alpine
     container_name: oracle-caddy
+    # Caddy is opt-in via the `tls` profile. Default `docker compose up`
+    # skips it (local dev hits rest-api directly on http://localhost:8080).
+    # Production deploys via docker-compose.prod.yml force-include Caddy.
+    profiles: [tls]
     ports:
       - "${CADDY_HTTP_PORT:-80}:80"
       - "${CADDY_HTTPS_PORT:-443}:443"

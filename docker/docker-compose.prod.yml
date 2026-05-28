@@ -64,6 +64,9 @@ services:
   rest-api:
     image: ghcr.io/asolovov/evm-oracle-demo-api:${IMAGE_TAG_API:-latest}
     build: !reset null
+    # Production never publishes the API to the host — Caddy is the only
+    # public surface. Reset the dev `ports:` mapping.
+    ports: !reset null
     restart: always
     deploy:
       resources:
@@ -72,6 +75,9 @@ services:
           cpus: "0.5"
 
   caddy:
+    # Production unconditionally includes Caddy regardless of the
+    # `--profile` flag — TLS termination is non-negotiable in prod.
+    profiles: !reset null
     restart: always
     deploy:
       resources:

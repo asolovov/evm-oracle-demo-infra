@@ -53,8 +53,8 @@ hasn't shipped yet. Once it exists, add it as a submodule and uncomment the
 ```bash
 git clone --recursive git@github.com:asolovov/evm-oracle-demo-infra.git
 cd evm-oracle-demo-infra
-cp docker/env.example .env
-# edit .env — fill CHAIN_WS_URL + CHAIN_RPC_URL + the API keys you have
+cp docker/env.example docker/.env
+# edit docker/.env — fill CHAIN_WS_URL + CHAIN_RPC_URL + the API keys you have
 make submodules
 mkdir -p secrets
 # write reporter1.key reporter2.key reporter3.key into ./secrets/
@@ -62,9 +62,22 @@ mkdir -p secrets
 make config           # validates compose YAML
 make up-build         # build images + bring stack up
 make logs             # tail every container
+
+# rest-api on the host:
+curl http://localhost:8080/api/v1/assets
 ```
 
-See [`docs/DEPLOY.md`](docs/DEPLOY.md) for the full production deploy.
+**Caddy is opt-in locally.** The dev stack publishes `rest-api` directly
+on `http://localhost:8080` so you can hit the REST surface without TLS.
+To exercise the production-style TLS terminator:
+
+```bash
+docker compose -f docker/docker-compose.yml --profile tls up -d caddy
+# https://localhost:443/api/v1/assets   (Caddy's internal CA — browser warning)
+```
+
+See [`docs/DEPLOY.md`](docs/DEPLOY.md) for the full production deploy
+(Caddy is always on in prod via `docker-compose.prod.yml`).
 
 ## Architecture rules this repo enforces
 

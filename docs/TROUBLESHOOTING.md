@@ -2,6 +2,21 @@
 
 Operational failure modes and their fixes. New ones are appended over time.
 
+## Caddy isn't running in dev — is that expected?
+
+Yes. Caddy is gated behind the `tls` compose profile. The default dev
+stack hits `rest-api` directly on `http://localhost:8080`. Bring Caddy up
+explicitly only when you want to exercise the production-style TLS
+edge:
+
+```bash
+docker compose -f docker/docker-compose.yml --profile tls up -d caddy
+```
+
+Production (`docker-compose.prod.yml`) always includes Caddy.
+
+---
+
 ## Caddy returns the placeholder instead of the dashboard
 
 **Symptom:** `https://<domain>/` shows "EVM Oracle Demo — backend up.
