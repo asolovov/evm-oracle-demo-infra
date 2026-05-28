@@ -54,6 +54,36 @@ shouldn't be modified at runtime.
 
 ---
 
+## Service crash-loops with `relation does not exist (SQLSTATE 42P01)`
+
+**Symptom:** `price-service` / `oracle-service` / `indexer-service` logs
+`relation "prices_aggregated" does not exist` (or `oracle_submissions`,
+or `events`, etc.).
+
+**Cause:** Schema migrations didn't run. Migrations are infra-owned via
+the `price-migrate` / `oracle-migrate` / `indexer-migrate` sidecars; if
+the sidecar fails or was removed from compose, the service hits empty
+DBs.
+
+**Fix:**
+
+```bash
+# Check the sidecar exited cleanly.
+docker compose -f docker/docker-compose.yml logs price-migrate
+
+# Re-run a specific sidecar.
+docker compose -f docker/docker-compose.yml up -d --force-recreate price-migrate
+
+# Confirm schema_migrations state.
+docker exec oracle-postgres psql -U postgres -d evm_price \
+    -c "SELECT version, dirty FROM schema_migrations"
+```
+
+If `dirty=t`, the previous migration failed mid-way — see the
+`migrate/migrate` docs on `force` to recover, then re-run.
+
+---
+
 ## Service crash-loops with `chain.rpc_url is required`
 
 **Symptom:** `indexer-service` or `oracle-service` keeps restarting; logs

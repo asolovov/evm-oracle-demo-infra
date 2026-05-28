@@ -148,6 +148,35 @@ crontab -e
 # 0 4 * * * /opt/lighthouse/scripts/backup.sh >> /var/log/lighthouse-backup.log 2>&1
 ```
 
+## Schema migrations
+
+Migrations live in each service submodule (`repos/<svc>/migrations/` or
+`repos/evm-oracle-demo-oracle-service/db/migrations/`). The service
+binaries don't apply them — infra does.
+
+Three one-shot containers in `docker/docker-compose.yml`
+(`price-migrate`, `oracle-migrate`, `indexer-migrate`) run
+`migrate/migrate:v4.18.1` against each database with the submodule's SQL
+files volume-mounted read-only. Each runs `migrate up`, exits 0, and
+unblocks the corresponding service via `depends_on:
+condition: service_completed_successfully`.
+
+Idempotent — `schema_migrations` tracks applied versions per database.
+Re-running `docker compose up` (or `deploy.sh`) is a no-op once the
+migrations land.
+
+To roll back manually:
+
+```bash
+docker compose run --rm price-migrate \
+    -path=/migrations \
+    -database="postgres://price_user:${PRICE_DB_PASSWORD}@postgres:5432/evm_price?sslmode=disable" \
+    down 1
+```
+
+To bump migration tooling, change the pinned tag on all three sidecars
+in one go (`migrate/migrate:vX.Y.Z`).
+
 ## Submodule pinning workflow
 
 Submodule pointers in this repo capture an exact SHA per submodule. To bump

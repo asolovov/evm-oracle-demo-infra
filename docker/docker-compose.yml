@@ -56,6 +56,67 @@ services:
     networks:
       - lighthouse
 
+  # ---------------------------------------------------------------------------
+  # One-shot schema migrators. Each runs golang-migrate against the matching
+  # service's database with the SQL files mounted from the submodule. They
+  # exit with status 0 on success (or 0 if no migrations are pending), and
+  # the corresponding service `depends_on` them with
+  # `condition: service_completed_successfully`.
+  #
+  # Idempotent: migrate tracks applied versions in `schema_migrations` per
+  # database, so re-runs are no-ops once a migration is in place.
+  #
+  # Migrations are orchestrated by infra (this file), not by the services
+  # themselves — the service binaries don't link any migration library.
+  # ---------------------------------------------------------------------------
+  price-migrate:
+    image: migrate/migrate:v4.18.1
+    container_name: oracle-price-migrate
+    command:
+      - "-path=/migrations"
+      - "-database=postgres://price_user:${PRICE_DB_PASSWORD:-price_pass}@postgres:5432/evm_price?sslmode=disable"
+      - "up"
+    volumes:
+      - ../repos/evm-oracle-demo-price-service/migrations:/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - lighthouse
+
+  oracle-migrate:
+    image: migrate/migrate:v4.18.1
+    container_name: oracle-oracle-migrate
+    command:
+      - "-path=/migrations"
+      - "-database=postgres://oracle_user:${ORACLE_DB_PASSWORD:-oracle_pass}@postgres:5432/evm_oracle?sslmode=disable"
+      - "up"
+    volumes:
+      - ../repos/evm-oracle-demo-oracle-service/db/migrations:/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - lighthouse
+
+  indexer-migrate:
+    image: migrate/migrate:v4.18.1
+    container_name: oracle-indexer-migrate
+    command:
+      - "-path=/migrations"
+      - "-database=postgres://indexer_user:${INDEXER_DB_PASSWORD:-indexer_pass}@postgres:5432/evm_indexer?sslmode=disable"
+      - "up"
+    volumes:
+      - ../repos/evm-oracle-demo-indexer-service/migrations:/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - lighthouse
+
   price-service:
     container_name: oracle-price-service
     build:
@@ -81,6 +142,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      price-migrate:
+        condition: service_completed_successfully
     healthcheck:
       # distroless image — use the binary's own healthz endpoint via a
       # sidecar pattern would be cleaner; for v1 we trust the readiness of
@@ -125,6 +188,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      indexer-migrate:
+        condition: service_completed_successfully
     healthcheck:
       disable: true
     restart: unless-stopped
@@ -171,6 +236,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      oracle-migrate:
+        condition: service_completed_successfully
       price-service:
         condition: service_started
       indexer-service:

@@ -6,7 +6,10 @@ docker/.env
 # Local secrets dir mounted into oracle-service in dev (compose default
 # REPORTER_SECRETS_DIR=./secrets). Production keys live at
 # /etc/lighthouse/secrets/ on the VPS, never in the repo.
-/secrets/
+/secrets/*
+# But DO track the format examples and the readme.
+!/secrets/*.example
+!/secrets/README.md
 
 # Local build / state.
 .DS_Store

@@ -76,9 +76,12 @@ operational shape:
 - **Three Postgres databases, one instance** — `evm_price`, `evm_oracle`,
   `evm_indexer`. `rest-api` uses Redis only (no relational state). See
   `docker/postgres-init/01-init.sh`.
-- **One binary, one run command** — no separate seed CLIs, no post-deploy
-  Job containers, no YAML fixture files. Container startup runs migrations
-  and reads desired-state from env vars.
+- **Migrations are infra's responsibility, not the services'.** The Go
+  binaries don't link any migration library. This repo runs three
+  one-shot `migrate/migrate` sidecars (`price-migrate`, `oracle-migrate`,
+  `indexer-migrate`) that mount each submodule's `migrations/` directory
+  read-only and run `migrate up` against the matching database. Services
+  depend on the sidecar with `condition: service_completed_successfully`.
 - **Generated code never committed** — every service Dockerfile installs
   pinned codegen tools (buf v1.55.0, protoc-gen-go v1.36.0,
   protoc-gen-go-grpc v1.5.1) and regenerates stubs on build.
