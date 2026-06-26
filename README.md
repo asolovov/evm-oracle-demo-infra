@@ -67,17 +67,27 @@ make logs             # tail every container
 curl http://localhost:8080/api/v1/assets
 ```
 
-**Caddy is opt-in locally.** The dev stack publishes `rest-api` directly
-on `http://localhost:8080` so you can hit the REST surface without TLS.
-To exercise the production-style TLS terminator:
+**Local mode publishes every service on a host port — no proxy, no TLS:**
+
+| Service | Host port |
+|---|---|
+| rest-api (HTTP) | `8080` (healthz `8081`) |
+| price-service (gRPC) | `50051` (healthz `8082`) |
+| indexer-service (gRPC) | `9090` (healthz `8083`) |
+| oracle-service (gRPC) | `9091` (healthz `8084`) |
+| postgres / redis | `5432` / `6379` |
+
+Override any in `docker/.env` if a port collides. Caddy stays off locally
+(gated behind the `tls` profile). To exercise the production TLS edge:
 
 ```bash
 docker compose -f docker/docker-compose.yml --profile tls up -d caddy
-# https://localhost:443/api/v1/assets   (Caddy's internal CA — browser warning)
+# https://localhost/api/v1/assets   (Caddy's internal CA — browser warning)
 ```
 
-See [`docs/DEPLOY.md`](docs/DEPLOY.md) for the full production deploy
-(Caddy is always on in prod via `docker-compose.prod.yml`).
+**Production** = clone → fill `docker/.env` → compose up with the prod
+overlay (Docker Hub images, internal-only services, Caddy as the single TLS
+surface). See [`docs/DEPLOY.md`](docs/DEPLOY.md).
 
 ## Architecture rules this repo enforces
 

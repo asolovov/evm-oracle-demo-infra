@@ -1,15 +1,25 @@
-# EVM Oracle Demo — dev defaults.
+# EVM Oracle Demo — base compose (local / dev defaults).
 #
-# Brings up the full backend stack:
-#   postgres + redis  -> data stores
-#   price-service     -> off-chain aggregation (gRPC :50051)
-#   indexer-service   -> chain observer (gRPC :9090)
-#   oracle-service    -> reactive submitter (no inbound ports needed)
-#   rest-api          -> public BFF (HTTP :8080)
-#   caddy             -> TLS reverse proxy (:80, :443)
+# Brings up the full backend stack and publishes every service on a local
+# host port so you can reach each one directly — NO reverse proxy, NO TLS,
+# NO network gymnastics. This is the "local deployment" mode:
 #
-# Each service builds from its submodule under ../repos/. Override files
-# (docker-compose.prod.yml) swap build for image: pulls in production.
+#   docker compose -f docker/docker-compose.yml up -d
+#
+# Host ports (override any via docker/.env):
+#   postgres         -> ${POSTGRES_HOST_PORT:-5432}
+#   redis            -> ${REDIS_HOST_PORT:-6379}
+#   price-service    -> gRPC ${PRICE_GRPC_PORT:-50051}   healthz ${PRICE_HEALTHZ_PORT:-8082}
+#   indexer-service  -> gRPC ${INDEXER_GRPC_PORT:-9090}  healthz ${INDEXER_HEALTHZ_PORT:-8083}
+#   oracle-service   -> gRPC ${ORACLE_GRPC_PORT:-9091}   healthz ${ORACLE_HEALTHZ_PORT:-8084}
+#   rest-api         -> HTTP ${API_HOST_PORT:-8080}      healthz ${API_HEALTHZ_PORT:-8081}
+#
+# Production (docker-compose.prod.yml) layers on top: pulls images from
+# Docker Hub, resets every host port to internal-only, and turns on Caddy as
+# the single public TLS surface. Caddy is gated behind the `tls` profile so
+# it never starts in local mode.
+#
+# Each service builds from its submodule under ../repos/.
 #
 # Frontend service is intentionally absent — task 09 (frontend) is not yet
 # implemented. Wire it once the evm-oracle-demo-frontend repo exists; see
@@ -28,6 +38,8 @@ services:
       PRICE_DB_PASSWORD: ${PRICE_DB_PASSWORD:-price_pass}
       ORACLE_DB_PASSWORD: ${ORACLE_DB_PASSWORD:-oracle_pass}
       INDEXER_DB_PASSWORD: ${INDEXER_DB_PASSWORD:-indexer_pass}
+    ports:
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./postgres-init:/docker-entrypoint-initdb.d:ro
@@ -45,6 +57,8 @@ services:
     image: redis:7-alpine
     container_name: oracle-redis
     command: ["redis-server", "--save", "60", "1", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_HOST_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -122,6 +136,9 @@ services:
     build:
       context: ../repos/evm-oracle-demo-price-service
       dockerfile: Dockerfile
+    ports:
+      - "${PRICE_GRPC_PORT:-50051}:50051"
+      - "${PRICE_HEALTHZ_PORT:-8082}:8080"
     environment:
       ENV: ${ENV:-dev}
       DATABASE_HOST: postgres
@@ -134,9 +151,18 @@ services:
       GRPC_PORT: 50051
       HEALTHZ_HOST: 0.0.0.0
       HEALTHZ_PORT: 8080
+      # Keyed sources. Default-enabled + key-gated: uniswap_v3, alpha_vantage,
+      # eia, fred (the service refuses to start if an enabled keyed source has
+      # no key). twelve_data ships disabled by default. eia + fred ship
+      # DISABLED here so the stack boots with only the two keys above; flip
+      # *_ENABLED=true and supply a (free) key to turn them on.
       SOURCES_UNISWAP_V3_API_KEY: ${SOURCES_UNISWAP_V3_API_KEY:-}
       SOURCES_ALPHA_VANTAGE_API_KEY: ${SOURCES_ALPHA_VANTAGE_API_KEY:-}
       SOURCES_TWELVE_DATA_API_KEY: ${SOURCES_TWELVE_DATA_API_KEY:-}
+      SOURCES_EIA_ENABLED: ${SOURCES_EIA_ENABLED:-false}
+      SOURCES_EIA_API_KEY: ${SOURCES_EIA_API_KEY:-}
+      SOURCES_FRED_ENABLED: ${SOURCES_FRED_ENABLED:-false}
+      SOURCES_FRED_API_KEY: ${SOURCES_FRED_API_KEY:-}
       TELEMETRY_LOG_LEVEL: ${LOG_LEVEL:-info}
       TELEMETRY_LOG_FORMAT: json
     depends_on:
@@ -161,6 +187,9 @@ services:
     build:
       context: ../repos/evm-oracle-demo-indexer-service
       dockerfile: Dockerfile
+    ports:
+      - "${INDEXER_GRPC_PORT:-9090}:9090"
+      - "${INDEXER_HEALTHZ_PORT:-8083}:8080"
     environment:
       ENV: ${ENV:-dev}
       DATABASE_HOST: postgres
@@ -179,8 +208,6 @@ services:
       CHAIN_RPC_URL: ${CHAIN_RPC_URL:?CHAIN_RPC_URL is required}
       CHAIN_REGISTRY_ADDRESS: ${CHAIN_REGISTRY_ADDRESS:-0x89a6c12a403733c6a817472cec46a530581cb7ef}
       CHAIN_BACKFILL_FROM_BLOCK: ${INDEXER_BACKFILL_FROM_BLOCK:-0}
-      INDEXER_CONFIRMATIONS: ${INDEXER_CONFIRMATIONS:-5}
-      INDEXER_REORG_CHECK_INTERVAL_SEC: 10
       INDEXER_BACKFILL_CHUNK_SIZE: 1000
       INDEXER_STREAM_SUBSCRIBER_BUFFER: 256
       TELEMETRY_LOG_LEVEL: ${LOG_LEVEL:-info}
@@ -196,11 +223,33 @@ services:
     networks:
       - lighthouse
 
+  # ---------------------------------------------------------------------------
+  # oracle-service — the ONLY service that broadcasts on-chain transactions.
+  #
+  # SINGLE REPLICA, NO OVERLAP. The reporter keys + the EVM nonce sequence are
+  # owned by exactly one process. Two instances would race the nonce and
+  # double-submit fulfilments, so:
+  #   * NEVER run `docker compose up --scale oracle-service=N` (N>1).
+  #   * NEVER add `deploy.replicas > 1`.
+  # Within the single process, `submission.workers` (default 4) fan out
+  # price-fetch + signing, but a single sender goroutine serialises the actual
+  # broadcast + nonce assignment — so worker concurrency is safe.
+  #
+  # Restart is stop-then-start (compose's default recreate), NOT a rolling
+  # start-before-stop — so a redeploy never has two oracle processes alive at
+  # once. `stop_grace_period` gives an in-flight broadcast time to finish and
+  # persist its pending_txs row before SIGKILL, so a restart can't strand a
+  # half-sent transaction.
+  # ---------------------------------------------------------------------------
   oracle-service:
     container_name: oracle-oracle-service
     build:
       context: ../repos/evm-oracle-demo-oracle-service
       dockerfile: Dockerfile
+    ports:
+      - "${ORACLE_GRPC_PORT:-9091}:9091"
+      - "${ORACLE_HEALTHZ_PORT:-8084}:8080"
+    stop_grace_period: 30s
     environment:
       ENV: ${ENV:-dev}
       DATABASE_HOST: postgres
@@ -223,6 +272,7 @@ services:
       SIGNER_REPORTER_KEY_PATHS: ${SIGNER_REPORTER_KEY_PATHS:-["/etc/lighthouse/secrets/reporter1.key","/etc/lighthouse/secrets/reporter2.key","/etc/lighthouse/secrets/reporter3.key"]}
       SIGNER_THRESHOLD: ${SIGNER_THRESHOLD:-2}
       SIGNER_ALLOW_INSECURE_PERMS: ${SIGNER_ALLOW_INSECURE_PERMS:-false}
+      SUBMISSION_WORKERS: ${SUBMISSION_WORKERS:-4}
       HEARTBEAT_ENABLED: ${HEARTBEAT_ENABLED:-true}
       HEARTBEAT_INTERVAL_SEC: ${HEARTBEAT_INTERVAL_SEC:-3600}
       HEARTBEAT_DEVIATION_THRESHOLD: ${HEARTBEAT_DEVIATION_THRESHOLD:-0.015}
@@ -257,9 +307,10 @@ services:
       dockerfile: Dockerfile
     # Dev publishes the API on the host so the dashboard / curl can hit
     # http://localhost:8080 directly. Production fronts everything via Caddy
-    # and resets this back to internal-only (docker-compose.prod.yml).
+    # and resets these back to internal-only (docker-compose.prod.yml).
     ports:
       - "${API_HOST_PORT:-8080}:8080"
+      - "${API_HEALTHZ_PORT:-8081}:8081"
     environment:
       ENV: ${ENV:-dev}
       HTTP_HOST: 0.0.0.0
@@ -272,6 +323,7 @@ services:
       REDIS_DB: 0
       GRPC_CLIENT_PRICE_SERVICE_ADDR: price-service:50051
       GRPC_CLIENT_INDEXER_SERVICE_ADDR: indexer-service:9090
+      GRPC_CLIENT_ORACLE_SERVICE_ADDR: oracle-service:9091
       GRPC_CLIENT_USE_TLS: "false"
       RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
       RATE_LIMIT_REQUESTS_PER_MINUTE: ${RATE_LIMIT_REQUESTS_PER_MINUTE:-60}
@@ -288,6 +340,8 @@ services:
       price-service:
         condition: service_started
       indexer-service:
+        condition: service_started
+      oracle-service:
         condition: service_started
     healthcheck:
       disable: true

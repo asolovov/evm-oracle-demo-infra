@@ -68,48 +68,59 @@ What this does:
 
 Idempotent — re-running is safe.
 
-## 5. Place secrets + .env on the VPS
-
-```bash
-# Copy the env template and edit it locally before uploading.
-cp docker/env.example /tmp/lighthouse.env
-$EDITOR /tmp/lighthouse.env
-
-# Upload as the deploy user.
-scp /tmp/lighthouse.env deploy@198.51.100.42:/etc/lighthouse/.env
-ssh deploy@198.51.100.42 'sudo chmod 0400 /etc/lighthouse/.env'
-
-# Upload the three reporter keys. These were emitted by rotate-reporters.sh
-# locally; their addresses must already be in ReporterSet on chain.
-for n in 1 2 3; do
-    scp ./secrets/reporter${n}.key deploy@198.51.100.42:/tmp/
-    ssh deploy@198.51.100.42 \
-        "sudo install -o deploy -g deploy -m 0400 /tmp/reporter${n}.key /etc/lighthouse/secrets/"
-    ssh deploy@198.51.100.42 "rm /tmp/reporter${n}.key"
-done
-```
-
-## 6. Clone + deploy
+## 5. Clone the repo on the VPS
 
 ```bash
 ssh deploy@198.51.100.42
 sudo install -d -o deploy -g deploy /opt/lighthouse
 git clone --recursive git@github.com:asolovov/evm-oracle-demo-infra.git /opt/lighthouse
 cd /opt/lighthouse
-./scripts/deploy.sh
 ```
 
-`deploy.sh` defaults to the prod compose overrides (image pulls from
-Docker Hub, resource limits applied). On first run it will:
+The submodules carry the migration SQL the migrate sidecars apply, so
+`--recursive` is required.
 
-1. `git pull` + `git submodule update --init --recursive --remote`.
-2. `docker compose pull` — fetches images for all 4 services + Caddy.
-3. `docker compose up -d --remove-orphans`.
-4. `docker compose ps` — final status.
+## 6. Fill the env file + place reporter keys
 
-For local-build dev, pass `--build`.
+```bash
+# The compose stack auto-reads docker/.env.
+cp docker/env.example docker/.env
+$EDITOR docker/.env
+# Required before first up:
+#   CHAIN_WS_URL, CHAIN_RPC_URL          (keyed RPC recommended for backfill)
+#   POSTGRES_ROOT_PASSWORD + the 3 DB passwords
+#   SOURCES_UNISWAP_V3_API_KEY, SOURCES_ALPHA_VANTAGE_API_KEY
+#   DOMAIN + CADDY_EMAIL                 (for the real TLS cert)
+#   REPORTER_SECRETS_DIR=/etc/lighthouse/secrets   (absolute, in prod)
+chmod 0400 docker/.env
 
-## 7. Verify
+# Reporter keys — emitted locally by scripts/rotate-reporters.sh; their
+# addresses must already be in ReporterSet on chain.
+for n in 1 2 3; do
+    scp ./secrets/reporter${n}.key deploy@198.51.100.42:/tmp/
+    ssh deploy@198.51.100.42 \
+        "sudo install -o deploy -g deploy -m 0400 /tmp/reporter${n}.key /etc/lighthouse/secrets/ && rm /tmp/reporter${n}.key"
+done
+```
+
+## 7. Bring the stack up
+
+```bash
+cd /opt/lighthouse
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.prod.yml up -d
+```
+
+That's the whole prod deploy: **clone → fill `docker/.env` → compose up.**
+The prod override pulls images from Docker Hub, applies resource limits,
+keeps every service internal-only, and runs Caddy as the single TLS surface.
+On `up` the three `*-migrate` sidecars apply schema migrations before their
+services start.
+
+`scripts/deploy.sh` wraps this (pull + recreate + status) for repeat
+deploys and is handy from cron or CI; the plain `compose up` above is all a
+first deploy needs.
+
+## 8. Verify
 
 ```bash
 # Postgres created the 3 DBs on first start.
@@ -126,7 +137,7 @@ ssh deploy@198.51.100.42 'cd /opt/lighthouse && \
     docker compose -f docker/docker-compose.yml -f docker/docker-compose.prod.yml logs -f --tail=50'
 ```
 
-## 8. Register assets on chain
+## 9. Register assets on chain
 
 If the contracts repo was deployed and assets registered as part of task 04,
 **skip this**. Otherwise:
@@ -139,7 +150,7 @@ npx hardhat run scripts/register-assets.ts --network ethereum-sepolia
 `scripts/seed-assets.sh --emit-env-map` extracts the deployed aggregator
 addresses as the `CHAIN_AGGREGATOR_ADDRESSES` JSON map for `.env`.
 
-## 9. Schedule nightly backup
+## 10. Schedule nightly backup
 
 ```bash
 ssh deploy@198.51.100.42
