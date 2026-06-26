@@ -1,12 +1,14 @@
 # Production overrides — composed on top of docker-compose.yml.
 #
 # Differences vs dev:
-#   * Services pull pre-built images from GHCR instead of building locally.
+#   * Services pull pre-built images from Docker Hub (docker.io/asolovov/*)
+#     instead of building locally. Each service repo's Release workflow
+#     publishes `<version>` + `latest` tags on merge to main.
 #   * restart: always (was unless-stopped).
 #   * Memory + cpu limits per spec §3 / NFR-03 (4 vCPU / 8 GB CCX13 budget).
 #   * Caddy exposes 80/443 directly; rest-api/services do NOT publish ports.
 #
-# Image tags come from .env (IMAGE_TAG=v0.x.x or sha-<short>). The deploy
+# Image tags come from .env (IMAGE_TAG_* = vX.Y.Z, or `latest`). The deploy
 # script (scripts/deploy.sh) bumps the tag, runs `docker compose pull`, then
 # `docker compose up -d --remove-orphans`.
 #
@@ -32,7 +34,7 @@ services:
           cpus: "0.5"
 
   price-service:
-    image: ghcr.io/asolovov/evm-oracle-demo-price-service:${IMAGE_TAG_PRICE:-latest}
+    image: docker.io/asolovov/evm-oracle-demo-price-service:${IMAGE_TAG_PRICE:-latest}
     build: !reset null
     restart: always
     deploy:
@@ -42,7 +44,7 @@ services:
           cpus: "0.5"
 
   indexer-service:
-    image: ghcr.io/asolovov/evm-oracle-demo-indexer-service:${IMAGE_TAG_INDEXER:-latest}
+    image: docker.io/asolovov/evm-oracle-demo-indexer-service:${IMAGE_TAG_INDEXER:-latest}
     build: !reset null
     restart: always
     deploy:
@@ -52,7 +54,7 @@ services:
           cpus: "0.5"
 
   oracle-service:
-    image: ghcr.io/asolovov/evm-oracle-demo-oracle-service:${IMAGE_TAG_ORACLE:-latest}
+    image: docker.io/asolovov/evm-oracle-demo-oracle-service:${IMAGE_TAG_ORACLE:-latest}
     build: !reset null
     restart: always
     deploy:
@@ -62,7 +64,7 @@ services:
           cpus: "0.5"
 
   rest-api:
-    image: ghcr.io/asolovov/evm-oracle-demo-api:${IMAGE_TAG_API:-latest}
+    image: docker.io/asolovov/evm-oracle-demo-api:${IMAGE_TAG_API:-latest}
     build: !reset null
     # Production never publishes the API to the host — Caddy is the only
     # public surface. Reset the dev `ports:` mapping.

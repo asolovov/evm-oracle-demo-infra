@@ -26,7 +26,7 @@ evm-oracle-demo-infra/
 │   └── evm-oracle-demo-api/              # public REST + WS BFF
 ├── docker/
 │   ├── docker-compose.yml                # dev defaults
-│   ├── docker-compose.prod.yml           # GHCR pulls + resource limits
+│   ├── docker-compose.prod.yml           # Docker Hub pulls + resource limits
 │   ├── Caddyfile                         # TLS reverse proxy
 │   ├── env.example                       # template — copy to .env
 │   └── postgres-init/01-init.sh          # 3 DBs + 3 users on first start

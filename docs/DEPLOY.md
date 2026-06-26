@@ -99,8 +99,8 @@ cd /opt/lighthouse
 ./scripts/deploy.sh
 ```
 
-`deploy.sh` defaults to the prod compose overrides (image pulls from GHCR,
-resource limits applied). On first run it will:
+`deploy.sh` defaults to the prod compose overrides (image pulls from
+Docker Hub, resource limits applied). On first run it will:
 
 1. `git pull` + `git submodule update --init --recursive --remote`.
 2. `docker compose pull` — fetches images for all 4 services + Caddy.
@@ -147,6 +147,35 @@ crontab -e
 # add:
 # 0 4 * * * /opt/lighthouse/scripts/backup.sh >> /var/log/lighthouse-backup.log 2>&1
 ```
+
+## Container images & publishing
+
+Production pulls pre-built images from **Docker Hub** under the
+`docker.io/asolovov/` namespace:
+
+| Service         | Image                                         |
+|-----------------|-----------------------------------------------|
+| price-service   | `asolovov/evm-oracle-demo-price-service`      |
+| oracle-service  | `asolovov/evm-oracle-demo-oracle-service`     |
+| indexer-service | `asolovov/evm-oracle-demo-indexer-service`    |
+| rest-api        | `asolovov/evm-oracle-demo-api`                |
+
+Each service repo's `Release` workflow (`.github/workflows/release.yml`)
+publishes on **merge to main**: it computes the next semantic version,
+creates the git tag + GitHub release, then builds the image and pushes
+**two tags** — the version (`vX.Y.Z`) and `latest` — to Docker Hub
+(`linux/amd64`).
+
+**Required repo secrets** (set once per service repo, by the repo owner —
+never committed):
+
+- `DOCKERHUB_USERNAME` — `asolovov`
+- `DOCKERHUB_TOKEN` — a Docker Hub access token with Read/Write scope
+  (Docker Hub → Account Settings → Personal access tokens)
+
+Pin a specific version in production by setting the matching
+`IMAGE_TAG_*` in `/etc/lighthouse/.env` (e.g. `IMAGE_TAG_API=v1.3.0`);
+the default `latest` tracks the newest push.
 
 ## Schema migrations
 
@@ -206,5 +235,5 @@ Once `evm-oracle-demo-frontend` exists:
 3. Replace the `respond` placeholder in `docker/Caddyfile` with
    `reverse_proxy frontend:3000`.
 4. Add `IMAGE_TAG_FRONTEND` to `docker/env.example` and a matching
-   `image: ghcr.io/asolovov/evm-oracle-demo-frontend:${IMAGE_TAG_FRONTEND}`
+   `image: docker.io/asolovov/evm-oracle-demo-frontend:${IMAGE_TAG_FRONTEND}`
    override in `docker/docker-compose.prod.yml`.
