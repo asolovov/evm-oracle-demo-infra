@@ -204,11 +204,16 @@ services:
       HEALTHZ_PORT: 8080
       CHAIN_NAME: ${CHAIN_NAME:-ethereum-sepolia}
       CHAIN_CHAIN_ID: ${CHAIN_CHAIN_ID:-11155111}
+      # Live-only since indexer v1.2.3 (PR #6): WS subscription only — no RPC,
+      # no historical backfill. The asset set is seeded from config and
+      # bootstrapped into evm_indexer on startup, so the API resolves
+      # aggregators with zero archive queries.
       CHAIN_WS_URL: ${CHAIN_WS_URL:?CHAIN_WS_URL is required}
-      CHAIN_RPC_URL: ${CHAIN_RPC_URL:?CHAIN_RPC_URL is required}
       CHAIN_REGISTRY_ADDRESS: ${CHAIN_REGISTRY_ADDRESS:-0x89a6c12a403733c6a817472cec46a530581cb7ef}
-      CHAIN_BACKFILL_FROM_BLOCK: ${INDEXER_BACKFILL_FROM_BLOCK:-0}
-      INDEXER_BACKFILL_CHUNK_SIZE: 1000
+      # INDEXER_ASSETS (optional) — JSON array of {symbol,asset_id,aggregator}
+      # overriding the baked-in deployed 10-asset set. Empty = use the binary
+      # default (which matches contracts/deployments/ethereum-sepolia/).
+      INDEXER_ASSETS: ${INDEXER_ASSETS:-}
       INDEXER_STREAM_SUBSCRIBER_BUFFER: 256
       TELEMETRY_LOG_LEVEL: ${LOG_LEVEL:-info}
       TELEMETRY_LOG_FORMAT: json
