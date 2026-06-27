@@ -19,6 +19,17 @@
 {$DOMAIN:localhost} {
 	encode gzip zstd
 
+	# Security headers on every response. HSTS is safe because the site is
+	# HTTPS-only (HTTP 308-redirects up). nosniff + frame DENY + referrer
+	# policy are baseline hardening; -Server drops the version banner.
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
 	# Health probe path — exposed without rate limiting so VPS load balancers
 	# and external uptime monitors can hit it cheaply. rest-api serves
 	# /healthz on its operator-facing listener (:8081).
