@@ -366,7 +366,10 @@ services:
       - "${CADDY_HTTPS_PORT:-443}:443"
     environment:
       DOMAIN: ${DOMAIN:-localhost}
-      EMAIL: ${CADDY_EMAIL:-internal}
+      # Must be CADDY_EMAIL — the Caddyfile references {$CADDY_EMAIL}. (A bare
+      # EMAIL here never reaches the Caddyfile and ACME falls back to the
+      # bogus "internal" contact → Let's Encrypt rejects the order.)
+      CADDY_EMAIL: ${CADDY_EMAIL:-internal}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
