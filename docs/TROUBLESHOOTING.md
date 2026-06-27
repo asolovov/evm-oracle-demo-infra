@@ -2,6 +2,25 @@
 
 Operational failure modes and their fixes. New ones are appended over time.
 
+## Edited the Caddyfile but the change didn't take effect
+
+`docker compose up -d caddy` does **not** detect changes to the bind-mounted
+`Caddyfile` (compose only diffs the service definition, not mounted file
+content), and `docker exec oracle-caddy caddy reload …` has also proven
+unreliable here. Force it with a restart:
+
+```bash
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.prod.yml \
+  -f docker/docker-compose.smallbox.yml --env-file docker/.env restart caddy
+```
+
+Verify, e.g. that security headers are live:
+```bash
+curl -sI https://<domain>/ | grep -i strict-transport-security
+```
+
+---
+
 ## Caddy isn't running in dev — is that expected?
 
 Yes. Caddy is gated behind the `tls` compose profile. The default dev
