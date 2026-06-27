@@ -1,0 +1,63 @@
+# Small-box override — composed ON TOP of base + prod.
+#
+#   docker compose -f docker/docker-compose.yml \
+#                  -f docker/docker-compose.prod.yml \
+#                  -f docker/docker-compose.smallbox.yml up -d
+#
+# The prod override's resource limits are sized for the spec's 4 vCPU / 8 GB
+# target. On a small single-core droplet (e.g. 1 vCPU / 1.9 GB) Docker rejects
+# any per-container cpus > the core count, and the prod memory caps overcommit.
+# This file retunes every limit to fit a 1 vCPU / ~2 GB box (pair it with a
+# swapfile). Caps are ceilings, not reservations — real idle usage is far
+# lower; they exist to stop one service starving the others.
+name: evm-oracle-demo
+
+services:
+  postgres:
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+
+  redis:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128M
+
+  price-service:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.75"
+          memory: 256M
+
+  indexer-service:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.75"
+          memory: 256M
+
+  oracle-service:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.75"
+          memory: 256M
+
+  rest-api:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.75"
+          memory: 256M
+
+  caddy:
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128M
