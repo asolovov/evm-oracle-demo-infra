@@ -378,7 +378,10 @@ services:
       rest-api:
         condition: service_started
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:80/healthz"]
+      # Probe Caddy's admin API (plain HTTP, no redirect). Probing :80/healthz
+      # gives a false "unhealthy" once a real DOMAIN is set, because :80 then
+      # 308-redirects to HTTPS and `wget --spider` fails on the redirect.
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:2019/metrics"]
       interval: 30s
       timeout: 5s
       retries: 3
