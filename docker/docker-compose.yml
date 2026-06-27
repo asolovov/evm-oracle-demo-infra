@@ -321,6 +321,12 @@ services:
       HTTP_HOST: 0.0.0.0
       HTTP_PORT: 8080
       HTTP_CORS_ORIGINS: ${HTTP_CORS_ORIGINS:-["http://localhost:3000"]}
+      # rest-api only sees Caddy's IP as RemoteAddr; without trusting the proxy
+      # the rate limiter keys every client to one IP → a single GLOBAL budget
+      # (symptom: "works in one browser, throttles the next"). Trust the Docker
+      # subnet so the limiter reads the real client IP from X-Forwarded-For.
+      # Safe: in prod rest-api is internal-only, so Caddy is the sole caller.
+      HTTP_TRUSTED_PROXIES: ${HTTP_TRUSTED_PROXIES:-[]}
       HEALTHZ_HOST: 0.0.0.0
       HEALTHZ_PORT: 8081
       REDIS_ADDR: redis:6379
