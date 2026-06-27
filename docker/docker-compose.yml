@@ -381,7 +381,9 @@ services:
       # Probe Caddy's admin API (plain HTTP, no redirect). Probing :80/healthz
       # gives a false "unhealthy" once a real DOMAIN is set, because :80 then
       # 308-redirects to HTTPS and `wget --spider` fails on the redirect.
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:2019/metrics"]
+      # Use 127.0.0.1, not localhost: in-container `localhost` resolves to ::1
+      # (IPv6) but the admin API binds IPv4 127.0.0.1:2019 → connection refused.
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:2019/metrics"]
       interval: 30s
       timeout: 5s
       retries: 3
