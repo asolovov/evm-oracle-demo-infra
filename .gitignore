@@ -22,3 +22,9 @@ caddy_config/
 
 # Claude Code local state.
 .claude/
+
+# JetBrains IDE files.
+.idea/
+
+# Local scratch notes.
+some.md
