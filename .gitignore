@@ -1,0 +1,30 @@
+# Local env files — only docker/env.example is committed.
+.env
+.env.local
+docker/.env
+
+# Local secrets dir mounted into oracle-service in dev (compose default
+# REPORTER_SECRETS_DIR=./secrets). Production keys live at
+# /etc/lighthouse/secrets/ on the VPS, never in the repo.
+/secrets/*
+# But DO track the format examples and the readme.
+!/secrets/*.example
+!/secrets/README.md
+
+# Local build / state.
+.DS_Store
+*.log
+tmp/
+
+# Caddy local volumes if someone runs compose without docker volumes.
+caddy_data/
+caddy_config/
+
+# Claude Code local state.
+.claude/
+
+# JetBrains IDE files.
+.idea/
+
+# Local scratch notes.
+some.md

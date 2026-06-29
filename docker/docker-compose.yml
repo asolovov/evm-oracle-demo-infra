@@ -1,0 +1,421 @@
+# EVM Oracle Demo — base compose (local / dev defaults).
+#
+# Brings up the full backend stack and publishes every service on a local
+# host port so you can reach each one directly — NO reverse proxy, NO TLS,
+# NO network gymnastics. This is the "local deployment" mode:
+#
+#   docker compose -f docker/docker-compose.yml up -d
+#
+# Host ports (override any via docker/.env):
+#   postgres         -> ${POSTGRES_HOST_PORT:-5432}
+#   redis            -> ${REDIS_HOST_PORT:-6379}
+#   price-service    -> gRPC ${PRICE_GRPC_PORT:-50051}   healthz ${PRICE_HEALTHZ_PORT:-8082}
+#   indexer-service  -> gRPC ${INDEXER_GRPC_PORT:-9090}  healthz ${INDEXER_HEALTHZ_PORT:-8083}
+#   oracle-service   -> gRPC ${ORACLE_GRPC_PORT:-9091}   healthz ${ORACLE_HEALTHZ_PORT:-8084}
+#   rest-api         -> HTTP ${API_HOST_PORT:-8080}      healthz ${API_HEALTHZ_PORT:-8081}
+#
+# Production (docker-compose.prod.yml) layers on top: pulls images from
+# Docker Hub, resets every host port to internal-only, and turns on Caddy as
+# the single public TLS surface. Caddy is gated behind the `tls` profile so
+# it never starts in local mode.
+#
+# Each service builds from its submodule under ../repos/.
+#
+# Frontend service is intentionally absent — task 09 (frontend) is not yet
+# implemented. Wire it once the evm-oracle-demo-frontend repo exists; see
+# docs/DEPLOY.md "Frontend wiring (post task 09)".
+
+name: evm-oracle-demo
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: oracle-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_ROOT_PASSWORD:-postgres}
+      POSTGRES_DB: postgres
+      PRICE_DB_PASSWORD: ${PRICE_DB_PASSWORD:-price_pass}
+      ORACLE_DB_PASSWORD: ${ORACLE_DB_PASSWORD:-oracle_pass}
+      INDEXER_DB_PASSWORD: ${INDEXER_DB_PASSWORD:-indexer_pass}
+    ports:
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - lighthouse
+
+  redis:
+    image: redis:7-alpine
+    container_name: oracle-redis
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_HOST_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+    networks:
+      - lighthouse
+
+  # ---------------------------------------------------------------------------
+  # One-shot schema migrators. Each runs golang-migrate against the matching
+  # service's database with the SQL files mounted from the submodule. They
+  # exit with status 0 on success (or 0 if no migrations are pending), and
+  # the corresponding service `depends_on` them with
+  # `condition: service_completed_successfully`.
+  #
+  # Idempotent: migrate tracks applied versions in `schema_migrations` per
+  # database, so re-runs are no-ops once a migration is in place.
+  #
+  # Migrations are orchestrated by infra (this file), not by the services
+  # themselves — the service binaries don't link any migration library.
+  # ---------------------------------------------------------------------------
+  price-migrate:
+    image: migrate/migrate:v4.18.1
+    container_name: oracle-price-migrate
+    command:
+      - "-path=/migrations"
+      - "-database=postgres://price_user:${PRICE_DB_PASSWORD:-price_pass}@postgres:5432/evm_price?sslmode=disable"
+      - "up"
+    volumes:
+      - ../repos/evm-oracle-demo-price-service/migrations:/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - lighthouse
+
+  oracle-migrate:
+    image: migrate/migrate:v4.18.1
+    container_name: oracle-oracle-migrate
+    command:
+      - "-path=/migrations"
+      - "-database=postgres://oracle_user:${ORACLE_DB_PASSWORD:-oracle_pass}@postgres:5432/evm_oracle?sslmode=disable"
+      - "up"
+    volumes:
+      - ../repos/evm-oracle-demo-oracle-service/db/migrations:/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - lighthouse
+
+  indexer-migrate:
+    image: migrate/migrate:v4.18.1
+    container_name: oracle-indexer-migrate
+    command:
+      - "-path=/migrations"
+      - "-database=postgres://indexer_user:${INDEXER_DB_PASSWORD:-indexer_pass}@postgres:5432/evm_indexer?sslmode=disable"
+      - "up"
+    volumes:
+      - ../repos/evm-oracle-demo-indexer-service/migrations:/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - lighthouse
+
+  price-service:
+    container_name: oracle-price-service
+    build:
+      context: ../repos/evm-oracle-demo-price-service
+      dockerfile: Dockerfile
+    ports:
+      - "${PRICE_GRPC_PORT:-50051}:50051"
+      - "${PRICE_HEALTHZ_PORT:-8082}:8080"
+    environment:
+      ENV: ${ENV:-dev}
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_USER: price_user
+      DATABASE_PASSWORD: ${PRICE_DB_PASSWORD:-price_pass}
+      DATABASE_NAME: evm_price
+      DATABASE_SSL_MODE: disable
+      GRPC_HOST: 0.0.0.0
+      GRPC_PORT: 50051
+      HEALTHZ_HOST: 0.0.0.0
+      HEALTHZ_PORT: 8080
+      # Keyed sources. Default-enabled + key-gated: uniswap_v3, alpha_vantage,
+      # eia, fred (the service refuses to start if an enabled keyed source has
+      # no key). twelve_data ships disabled by default. eia + fred ship
+      # DISABLED here so the stack boots with only the two keys above; flip
+      # *_ENABLED=true and supply a (free) key to turn them on.
+      SOURCES_UNISWAP_V3_API_KEY: ${SOURCES_UNISWAP_V3_API_KEY:-}
+      SOURCES_ALPHA_VANTAGE_API_KEY: ${SOURCES_ALPHA_VANTAGE_API_KEY:-}
+      SOURCES_TWELVE_DATA_API_KEY: ${SOURCES_TWELVE_DATA_API_KEY:-}
+      SOURCES_EIA_ENABLED: ${SOURCES_EIA_ENABLED:-false}
+      SOURCES_EIA_API_KEY: ${SOURCES_EIA_API_KEY:-}
+      SOURCES_FRED_ENABLED: ${SOURCES_FRED_ENABLED:-false}
+      SOURCES_FRED_API_KEY: ${SOURCES_FRED_API_KEY:-}
+      TELEMETRY_LOG_LEVEL: ${LOG_LEVEL:-info}
+      TELEMETRY_LOG_FORMAT: json
+    depends_on:
+      postgres:
+        condition: service_healthy
+      price-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      # distroless image — use the binary's own healthz endpoint via a
+      # sidecar pattern would be cleaner; for v1 we trust the readiness of
+      # the gRPC port via depends_on chain. Compose 2.x docker healthcheck
+      # against a distroless image needs CMD-SHELL on a host with curl/wget,
+      # neither of which exist in distroless. Skip the in-container check
+      # and rely on /healthz from the host (see docs/TROUBLESHOOTING.md).
+      disable: true
+    restart: unless-stopped
+    networks:
+      - lighthouse
+
+  indexer-service:
+    container_name: oracle-indexer-service
+    build:
+      context: ../repos/evm-oracle-demo-indexer-service
+      dockerfile: Dockerfile
+    ports:
+      - "${INDEXER_GRPC_PORT:-9090}:9090"
+      - "${INDEXER_HEALTHZ_PORT:-8083}:8080"
+    environment:
+      ENV: ${ENV:-dev}
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_USER: indexer_user
+      DATABASE_PASSWORD: ${INDEXER_DB_PASSWORD:-indexer_pass}
+      DATABASE_NAME: evm_indexer
+      DATABASE_SSL_MODE: disable
+      GRPC_HOST: 0.0.0.0
+      GRPC_PORT: 9090
+      HEALTHZ_HOST: 0.0.0.0
+      HEALTHZ_PORT: 8080
+      CHAIN_NAME: ${CHAIN_NAME:-ethereum-sepolia}
+      CHAIN_CHAIN_ID: ${CHAIN_CHAIN_ID:-11155111}
+      # Live-only since indexer v1.2.3 (PR #6): WS subscription only — no RPC,
+      # no historical backfill. The asset set is seeded from config and
+      # bootstrapped into evm_indexer on startup, so the API resolves
+      # aggregators with zero archive queries.
+      CHAIN_WS_URL: ${CHAIN_WS_URL:?CHAIN_WS_URL is required}
+      CHAIN_REGISTRY_ADDRESS: ${CHAIN_REGISTRY_ADDRESS:-0x89a6c12a403733c6a817472cec46a530581cb7ef}
+      # INDEXER_ASSETS (optional) — JSON array of {symbol,asset_id,aggregator}
+      # overriding the baked-in deployed 10-asset set. Empty = use the binary
+      # default (which matches contracts/deployments/ethereum-sepolia/).
+      INDEXER_ASSETS: ${INDEXER_ASSETS:-}
+      INDEXER_STREAM_SUBSCRIBER_BUFFER: 256
+      TELEMETRY_LOG_LEVEL: ${LOG_LEVEL:-info}
+      TELEMETRY_LOG_FORMAT: json
+    depends_on:
+      postgres:
+        condition: service_healthy
+      indexer-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+    networks:
+      - lighthouse
+
+  # ---------------------------------------------------------------------------
+  # oracle-service — the ONLY service that broadcasts on-chain transactions.
+  #
+  # SINGLE REPLICA, NO OVERLAP. The reporter keys + the EVM nonce sequence are
+  # owned by exactly one process. Two instances would race the nonce and
+  # double-submit fulfilments, so:
+  #   * NEVER run `docker compose up --scale oracle-service=N` (N>1).
+  #   * NEVER add `deploy.replicas > 1`.
+  # Within the single process, `submission.workers` (default 4) fan out
+  # price-fetch + signing; broadcast rotates across the reporter EOAs with
+  # per-wallet nonce management (v1.3.0). Still ONE replica only — two
+  # processes would each manage the same wallets' nonces and collide.
+  #
+  # Restart is stop-then-start (compose's default recreate), NOT a rolling
+  # start-before-stop — so a redeploy never has two oracle processes alive at
+  # once. `stop_grace_period` gives an in-flight broadcast time to finish and
+  # persist its pending_txs row before SIGKILL, so a restart can't strand a
+  # half-sent transaction.
+  # ---------------------------------------------------------------------------
+  oracle-service:
+    container_name: oracle-oracle-service
+    build:
+      context: ../repos/evm-oracle-demo-oracle-service
+      dockerfile: Dockerfile
+    ports:
+      - "${ORACLE_GRPC_PORT:-9091}:9091"
+      - "${ORACLE_HEALTHZ_PORT:-8084}:8080"
+    stop_grace_period: 30s
+    environment:
+      ENV: ${ENV:-dev}
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_USER: oracle_user
+      DATABASE_PASSWORD: ${ORACLE_DB_PASSWORD:-oracle_pass}
+      DATABASE_NAME: evm_oracle
+      DATABASE_SSL_MODE: disable
+      GRPC_HOST: 0.0.0.0
+      GRPC_PORT: 9091
+      HEALTHZ_HOST: 0.0.0.0
+      HEALTHZ_PORT: 8080
+      CHAIN_NAME: ${CHAIN_NAME:-ethereum-sepolia}
+      CHAIN_CHAIN_ID: ${CHAIN_CHAIN_ID:-11155111}
+      CHAIN_RPC_URL: ${CHAIN_RPC_URL:?CHAIN_RPC_URL is required}
+      CHAIN_REGISTRY_ADDRESS: ${CHAIN_REGISTRY_ADDRESS:-0x89a6c12a403733c6a817472cec46a530581cb7ef}
+      CHAIN_AGGREGATOR_ADDRESSES: ${CHAIN_AGGREGATOR_ADDRESSES:?CHAIN_AGGREGATOR_ADDRESSES JSON map is required}
+      PRICE_ADDRESS: price-service:50051
+      INDEXER_ADDRESS: indexer-service:9090
+      SIGNER_REPORTER_KEY_PATHS: ${SIGNER_REPORTER_KEY_PATHS:-["/etc/lighthouse/secrets/reporter1.key","/etc/lighthouse/secrets/reporter2.key","/etc/lighthouse/secrets/reporter3.key"]}
+      SIGNER_THRESHOLD: ${SIGNER_THRESHOLD:-2}
+      SIGNER_ALLOW_INSECURE_PERMS: ${SIGNER_ALLOW_INSECURE_PERMS:-false}
+      SUBMISSION_WORKERS: ${SUBMISSION_WORKERS:-4}
+      # v1.3.0 multi-wallet broadcaster: rotates the on-chain sender across the
+      # reporter EOAs, skips wallets below the balance gate, and trips a
+      # funds-aware circuit breaker (backoff) instead of hot-looping when all
+      # are drained. gas_limit_estimate is the fixed fulfillPrice gas cap
+      # (the old too-low estimate caused the floor-data-gas reverts).
+      SUBMISSION_GAS_LIMIT_ESTIMATE: ${SUBMISSION_GAS_LIMIT_ESTIMATE:-300000}
+      SUBMISSION_BREAKER_BACKOFF_MIN_SEC: ${SUBMISSION_BREAKER_BACKOFF_MIN_SEC:-60}
+      SUBMISSION_BREAKER_BACKOFF_MAX_SEC: ${SUBMISSION_BREAKER_BACKOFF_MAX_SEC:-900}
+      HEARTBEAT_ENABLED: ${HEARTBEAT_ENABLED:-true}
+      HEARTBEAT_INTERVAL_SEC: ${HEARTBEAT_INTERVAL_SEC:-3600}
+      HEARTBEAT_DEVIATION_THRESHOLD: ${HEARTBEAT_DEVIATION_THRESHOLD:-0.015}
+      TELEMETRY_LOG_LEVEL: ${LOG_LEVEL:-info}
+      TELEMETRY_LOG_FORMAT: json
+    volumes:
+      # Reporter keys mounted read-only from the host secrets layout (spec §12.3).
+      # Default `../secrets` resolves the repo-root `secrets/` directory because
+      # compose interprets relative volume paths relative to the compose file's
+      # directory (`docker/`). In prod set REPORTER_SECRETS_DIR to the absolute
+      # path `/etc/lighthouse/secrets`.
+      - ${REPORTER_SECRETS_DIR:-../secrets}:/etc/lighthouse/secrets:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      oracle-migrate:
+        condition: service_completed_successfully
+      price-service:
+        condition: service_started
+      indexer-service:
+        condition: service_started
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+    networks:
+      - lighthouse
+
+  rest-api:
+    container_name: oracle-rest-api
+    build:
+      context: ../repos/evm-oracle-demo-api
+      dockerfile: Dockerfile
+    # Dev publishes the API on the host so the dashboard / curl can hit
+    # http://localhost:8080 directly. Production fronts everything via Caddy
+    # and resets these back to internal-only (docker-compose.prod.yml).
+    ports:
+      - "${API_HOST_PORT:-8080}:8080"
+      - "${API_HEALTHZ_PORT:-8081}:8081"
+    environment:
+      ENV: ${ENV:-dev}
+      HTTP_HOST: 0.0.0.0
+      HTTP_PORT: 8080
+      # NOTE: list env vars are COMMA-SEPARATED (mapstructure StringToSliceHook),
+      # NOT JSON arrays. Use `a,b`, never `["a","b"]`.
+      HTTP_CORS_ORIGINS: ${HTTP_CORS_ORIGINS:-http://localhost:3000}
+      # rest-api only sees Caddy's IP as RemoteAddr; without trusting the proxy
+      # the rate limiter keys every client to one IP → a single GLOBAL budget
+      # (symptom: "works in one browser, throttles the next"). Trust the Docker
+      # subnet so the limiter reads the real client IP from X-Forwarded-For.
+      # Safe: in prod rest-api is internal-only, so Caddy is the sole caller.
+      HTTP_TRUSTED_PROXIES: ${HTTP_TRUSTED_PROXIES:-}
+      HEALTHZ_HOST: 0.0.0.0
+      HEALTHZ_PORT: 8081
+      REDIS_ADDR: redis:6379
+      REDIS_PASSWORD: ""
+      REDIS_DB: 0
+      GRPC_CLIENT_PRICE_SERVICE_ADDR: price-service:50051
+      GRPC_CLIENT_INDEXER_SERVICE_ADDR: indexer-service:9090
+      GRPC_CLIENT_ORACLE_SERVICE_ADDR: oracle-service:9091
+      GRPC_CLIENT_USE_TLS: "false"
+      RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
+      RATE_LIMIT_REQUESTS_PER_MINUTE: ${RATE_LIMIT_REQUESTS_PER_MINUTE:-60}
+      CHAIN_CHAIN_ID: ${CHAIN_CHAIN_ID:-11155111}
+      CHAIN_NAME: ${CHAIN_NAME:-ethereum-sepolia}
+      CHAIN_REGISTRY_ADDRESS: ${CHAIN_REGISTRY_ADDRESS:-0x89a6c12a403733c6a817472cec46a530581cb7ef}
+      CHAIN_EXPLORER_URL_PATTERN: ${CHAIN_EXPLORER_URL_PATTERN:-https://sepolia.etherscan.io/tx/{tx_hash}}
+      AUTHOR_NAME: ${AUTHOR_NAME:-Andrei Solovov}
+      TELEMETRY_LOG_LEVEL: ${LOG_LEVEL:-info}
+      TELEMETRY_LOG_FORMAT: json
+    depends_on:
+      redis:
+        condition: service_healthy
+      price-service:
+        condition: service_started
+      indexer-service:
+        condition: service_started
+      oracle-service:
+        condition: service_started
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+    networks:
+      - lighthouse
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: oracle-caddy
+    # Caddy is opt-in via the `tls` profile. Default `docker compose up`
+    # skips it (local dev hits rest-api directly on http://localhost:8080).
+    # Production deploys via docker-compose.prod.yml force-include Caddy.
+    profiles: [tls]
+    ports:
+      - "${CADDY_HTTP_PORT:-80}:80"
+      - "${CADDY_HTTPS_PORT:-443}:443"
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+      # Must be CADDY_EMAIL — the Caddyfile references {$CADDY_EMAIL}. (A bare
+      # EMAIL here never reaches the Caddyfile and ACME falls back to the
+      # bogus "internal" contact → Let's Encrypt rejects the order.)
+      CADDY_EMAIL: ${CADDY_EMAIL:-internal}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      rest-api:
+        condition: service_started
+    healthcheck:
+      # Probe Caddy's admin API (plain HTTP, no redirect). Probing :80/healthz
+      # gives a false "unhealthy" once a real DOMAIN is set, because :80 then
+      # 308-redirects to HTTPS and `wget --spider` fails on the redirect.
+      # Use 127.0.0.1, not localhost: in-container `localhost` resolves to ::1
+      # (IPv6) but the admin API binds IPv4 127.0.0.1:2019 → connection refused.
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:2019/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - lighthouse
+
+volumes:
+  postgres_data:
+  redis_data:
+  caddy_data:
+  caddy_config:
+
+networks:
+  lighthouse:
+    name: lighthouse
+    driver: bridge

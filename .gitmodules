@@ -1,0 +1,18 @@
+[submodule "repos/evm-oracle-demo-contracts"]
+	path = repos/evm-oracle-demo-contracts
+	url = git@github.com:asolovov/evm-oracle-demo-contracts.git
+[submodule "repos/evm-oracle-demo-protocols"]
+	path = repos/evm-oracle-demo-protocols
+	url = git@github.com:asolovov/evm-oracle-demo-protocols.git
+[submodule "repos/evm-oracle-demo-price-service"]
+	path = repos/evm-oracle-demo-price-service
+	url = git@github.com:asolovov/evm-oracle-demo-price-service.git
+[submodule "repos/evm-oracle-demo-oracle-service"]
+	path = repos/evm-oracle-demo-oracle-service
+	url = git@github.com:asolovov/evm-oracle-demo-oracle-service.git
+[submodule "repos/evm-oracle-demo-indexer-service"]
+	path = repos/evm-oracle-demo-indexer-service
+	url = git@github.com:asolovov/evm-oracle-demo-indexer-service.git
+[submodule "repos/evm-oracle-demo-api"]
+	path = repos/evm-oracle-demo-api
+	url = git@github.com:asolovov/evm-oracle-demo-api.git
